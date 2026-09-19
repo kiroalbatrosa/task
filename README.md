@@ -27,7 +27,7 @@ The initial process runs as root so prerequisite installation never invokes nest
 
 | Component | URL | Notes |
 | --- | --- | --- |
-| Application | <http://localhost:3000> | `/health`, `/ready`, and `/metrics` are available |
+| Application | <http://localhost:3000> | `/health`, `/ready`, `/version`, and `/metrics` are available |
 | Prometheus | <http://localhost:9090> | Check **Status > Target health** for the app targets |
 | Grafana | <http://localhost:3001> | Log in with `admin` / `admin` by default |
 
@@ -98,6 +98,7 @@ The application exposes:
 - `GET /health`: process liveness and uptime; used by the Kubernetes liveness/startup probes.
 - `GET /ready`: returns `503` during the configurable startup delay, then `200`; used by the readiness probe.
 - `GET /metrics`: Prometheus text-format metrics, including Node.js process metrics, request count/latency, and the supplied synthetic application metrics.
+- `GET /version`: the source commit SHA baked into the image by CI, or `development` for an unversioned local build.
 - `GET /`: a simple user-facing response.
 
 The Dockerfile uses separate dependency, build, production-dependency, and runtime stages. The final image contains no compiler or development dependencies and runs as the unprivileged `node` user. Kubernetes additionally drops Linux capabilities, blocks privilege escalation, uses the runtime-default seccomp profile, and mounts the container root filesystem read-only.
@@ -152,6 +153,12 @@ To inspect the raw target status, open <http://localhost:9090/targets>. To inspe
 
 ```bash
 curl http://localhost:3000/metrics
+```
+
+To confirm which CI build is deployed, compare the version response with `git rev-parse HEAD`:
+
+```bash
+curl http://localhost:3000/version
 ```
 
 ## Verification and troubleshooting

@@ -36,6 +36,15 @@ describe('GET /metrics', () => {
   });
 });
 
+describe('GET /version', () => {
+  it('returns the application build version', async () => {
+    const res = await request(app).get('/version');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ version: 'development' });
+  });
+});
+
 describe('GET /', () => {
   it('returns 200 with a greeting', async () => {
     const res = await request(app).get('/');

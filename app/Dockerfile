@@ -16,8 +16,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 FROM node:24-alpine AS runtime
+ARG APP_VERSION=development
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=3000 \
+    APP_VERSION=${APP_VERSION}
 WORKDIR /app
 
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules

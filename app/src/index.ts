@@ -8,6 +8,7 @@ app.disable('x-powered-by');
 app.use(metricsMiddleware);
 
 const READY_DELAY_MS = Number(process.env.READY_DELAY_MS || 5000);
+const APP_VERSION = process.env.APP_VERSION || 'development';
 const startedAt = Date.now();
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -29,6 +30,10 @@ app.get('/ready', (_req: Request, res: Response) => {
 app.get('/metrics', async (_req: Request, res: Response) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
+});
+
+app.get('/version', (_req: Request, res: Response) => {
+  res.status(200).json({ version: APP_VERSION });
 });
 
 app.get('/', (_req: Request, res: Response) => {

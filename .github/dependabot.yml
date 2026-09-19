@@ -4,6 +4,10 @@ updates:
     directory: /app
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: typescript
+        versions:
+          - ">=7.0.0"
   - package-ecosystem: docker
     directory: /app
     schedule:

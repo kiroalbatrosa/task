@@ -45,6 +45,17 @@ jobs:
         working-directory: app
         run: npm run build
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.0
+
+      - name: Lint Helm chart
+        run: helm lint helm/devops-assignment
+
+      - name: Render Helm chart
+        run: helm template devops-assignment helm/devops-assignment --namespace default >/dev/null
+
   build-and-push:
     name: Build and push image
     needs: test

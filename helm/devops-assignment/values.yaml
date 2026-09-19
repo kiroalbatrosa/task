@@ -1,0 +1,56 @@
+namespaces:
+  application: app
+  observability: observability
+
+# setup.sh changes this value on every run so helm upgrade performs a rolling
+# replacement even when the configured image tag has not changed.
+rolloutToken: initial
+
+application:
+  replicas: 2
+  image:
+    repository: ghcr.io/kiroalbatrosa/task
+    tag: latest
+    digest: ""
+    pullPolicy: Always
+  service:
+    nodePort: 30000
+  resources:
+    requests:
+      cpu: 25m
+      memory: 48Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+prometheus:
+  image:
+    repository: prom/prometheus
+    tag: v3.14.0
+    pullPolicy: IfNotPresent
+  service:
+    nodePort: 30090
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+grafana:
+  image:
+    repository: grafana/grafana
+    tag: 13.2.2
+    pullPolicy: IfNotPresent
+  adminUser: admin
+  adminPassword: admin
+  service:
+    nodePort: 30300
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi

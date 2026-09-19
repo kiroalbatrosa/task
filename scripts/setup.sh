@@ -4,7 +4,9 @@ set -Eeuo pipefail
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly MINIKUBE_VERSION="${MINIKUBE_VERSION:-v1.39.0}"
 readonly KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.37.0}"
+readonly HELM_VERSION="${HELM_VERSION:-v4.3.0}"
 readonly MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-devops-assignment}"
+readonly HELM_RELEASE="${HELM_RELEASE:-devops-assignment}"
 readonly MINIKUBE_CPUS="${MINIKUBE_CPUS:-2}"
 readonly MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-3072}"
 readonly IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/kiroalbatrosa/task}"
@@ -35,6 +37,7 @@ ensure_bootstrap_packages() {
   command -v grep >/dev/null 2>&1 || missing+=(grep)
   command -v runuser >/dev/null 2>&1 || missing+=(util-linux)
   command -v sed >/dev/null 2>&1 || missing+=(sed)
+  command -v tar >/dev/null 2>&1 || missing+=(tar)
   command -v usermod >/dev/null 2>&1 || missing+=(passwd)
 
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -141,6 +144,52 @@ ensure_kubectl() {
     "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/${architecture}/kubectl" \
     "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/${architecture}/kubectl.sha256" \
     /usr/local/bin/kubectl
+  hash -r
+}
+
+helm_supports_required_features() {
+  local candidate="$1"
+  local upgrade_help
+  upgrade_help="$("${candidate}" upgrade --help 2>/dev/null)" || return 1
+  grep -Fq -- '--take-ownership' <<< "${upgrade_help}" &&
+    grep -Fq -- '--force-conflicts' <<< "${upgrade_help}" &&
+    grep -Fq -- '--rollback-on-failure' <<< "${upgrade_help}"
+}
+
+ensure_helm() {
+  local candidate architecture download_dir archive_name archive_file checksum_file expected_checksum
+  architecture="$(detect_architecture)"
+  candidate="$(command -v helm 2>/dev/null || true)"
+
+  if [[ -n "${candidate}" ]] && helm_supports_required_features "${candidate}"; then
+    echo "Helm $("${candidate}" version --short 2>/dev/null || echo unknown) already present at ${candidate}."
+    return
+  fi
+
+  if [[ -n "${candidate}" ]]; then
+    echo "Helm at ${candidate} does not support the required adoption and rollback flags."
+  fi
+
+  log "Installing Helm ${HELM_VERSION} system-wide"
+  download_dir="$(mktemp -d)"
+  archive_name="helm-${HELM_VERSION}-linux-${architecture}.tar.gz"
+  archive_file="${download_dir}/${archive_name}"
+  checksum_file="${archive_file}.sha256sum"
+
+  echo "Downloading helm..."
+  curl --fail --location --silent --show-error \
+    --output "${archive_file}" "https://get.helm.sh/${archive_name}"
+  curl --fail --location --silent --show-error \
+    --output "${checksum_file}" "https://get.helm.sh/${archive_name}.sha256sum"
+
+  expected_checksum="$(sed -nE 's/^([[:xdigit:]]{64}).*/\1/p' "${checksum_file}" | head -n 1)"
+  [[ "${expected_checksum}" =~ ^[[:xdigit:]]{64}$ ]] || fail "The downloaded Helm checksum is not valid."
+  printf '%s  %s\n' "${expected_checksum}" "${archive_file}" | sha256sum --check --status || \
+    fail "Checksum verification failed for Helm."
+
+  tar --extract --gzip --file "${archive_file}" --directory "${download_dir}"
+  install -o root -g root -m 0755 "${download_dir}/linux-${architecture}/helm" /usr/local/bin/helm
+  rm -rf "${download_dir:?}"
   hash -r
 }
 
@@ -278,7 +327,9 @@ continue_as_deployment_user() {
       SETUP_PHASE=deploy \
       "MINIKUBE_VERSION=${MINIKUBE_VERSION}" \
       "KUBERNETES_VERSION=${KUBERNETES_VERSION}" \
+      "HELM_VERSION=${HELM_VERSION}" \
       "MINIKUBE_PROFILE=${MINIKUBE_PROFILE}" \
+      "HELM_RELEASE=${HELM_RELEASE}" \
       "MINIKUBE_CPUS=${MINIKUBE_CPUS}" \
       "MINIKUBE_MEMORY=${MINIKUBE_MEMORY}" \
       "IMAGE_REPOSITORY=${IMAGE_REPOSITORY}" \
@@ -301,6 +352,7 @@ if [[ "${SETUP_PHASE}" == "bootstrap" ]]; then
   ensure_docker
   ensure_minikube
   ensure_kubectl
+  ensure_helm
   ensure_deployment_user_can_use_docker
   continue_as_deployment_user
 elif [[ "${SETUP_PHASE}" == "deploy" ]]; then
@@ -328,45 +380,40 @@ fi
 
 kubectl config use-context "${MINIKUBE_PROFILE}" >/dev/null
 
-log "Creating namespaces and the local Grafana credential secret"
-kubectl apply -f "${ROOT_DIR}/k8s/namespaces.yaml"
-kubectl --namespace observability create secret generic grafana-admin \
-  --from-literal="admin-user=${GRAFANA_ADMIN_USER}" \
-  --from-literal="admin-password=${GRAFANA_ADMIN_PASSWORD}" \
-  --dry-run=client \
-  --output=yaml | kubectl apply -f -
+log "Resolving the application image digest"
+image_reference="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+docker pull "${image_reference}" >/dev/null
+repository_digest="$(
+  docker image inspect \
+    --format='{{range .RepoDigests}}{{println .}}{{end}}' \
+    "${image_reference}" | grep -F "${IMAGE_REPOSITORY}@" | head -n 1
+)"
+[[ "${repository_digest}" == "${IMAGE_REPOSITORY}@sha256:"* ]] || \
+  fail "Could not resolve an immutable digest for ${image_reference}."
+image_digest="${repository_digest##*@}"
+echo "Resolved ${image_reference} to ${image_digest}."
 
-app_deployment_existed=false
-prometheus_deployment_existed=false
-grafana_deployment_existed=false
-kubectl --namespace app get deployment/devops-assignment >/dev/null 2>&1 && app_deployment_existed=true
-kubectl --namespace observability get deployment/prometheus >/dev/null 2>&1 && prometheus_deployment_existed=true
-kubectl --namespace observability get deployment/grafana >/dev/null 2>&1 && grafana_deployment_existed=true
-
-log "Applying the application and observability manifests"
-kubectl apply -k "${ROOT_DIR}/k8s"
-kubectl --namespace app set image deployment/devops-assignment \
-  "app=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-
-if [[ "${app_deployment_existed}" == "true" ]]; then
-  kubectl --namespace app rollout restart deployment/devops-assignment
-fi
-if [[ "${prometheus_deployment_existed}" == "true" ]]; then
-  kubectl --namespace observability rollout restart deployment/prometheus
-fi
-if [[ "${grafana_deployment_existed}" == "true" ]]; then
-  kubectl --namespace observability rollout restart deployment/grafana
-fi
-
-log "Waiting for workloads to become available"
-kubectl --namespace app rollout status deployment/devops-assignment --timeout=180s
-kubectl --namespace observability rollout status deployment/prometheus --timeout=180s
-kubectl --namespace observability rollout status deployment/grafana --timeout=180s
+log "Installing or upgrading the Helm release"
+rollout_token="$(date -u +%Y%m%dT%H%M%S%N)"
+helm upgrade --install "${HELM_RELEASE}" "${ROOT_DIR}/helm/devops-assignment" \
+  --namespace default \
+  --take-ownership \
+  --force-conflicts \
+  --rollback-on-failure \
+  --wait \
+  --timeout 5m0s \
+  --set-string "rolloutToken=${rollout_token}" \
+  --set-string "application.image.repository=${IMAGE_REPOSITORY}" \
+  --set-string "application.image.tag=${IMAGE_TAG}" \
+  --set-string "application.image.digest=${image_digest}" \
+  --set-string "grafana.adminUser=${GRAFANA_ADMIN_USER}" \
+  --set-string "grafana.adminPassword=${GRAFANA_ADMIN_PASSWORD}"
 
 log "Checking the application endpoint"
 health_check_succeeded=false
 for _ in {1..30}; do
-  if curl --fail --silent --show-error http://localhost:3000/health >/dev/null; then
+  if curl --connect-timeout 2 --max-time 5 --fail --silent --show-error \
+      http://localhost:3000/health >/dev/null; then
     health_check_succeeded=true
     break
   fi
@@ -382,6 +429,7 @@ printf 'Application: http://localhost:3000\n'
 printf 'Prometheus:  http://localhost:9090\n'
 printf 'Grafana:     http://localhost:3001\n'
 printf 'Grafana login: %s / %s\n\n' "${GRAFANA_ADMIN_USER}" "${GRAFANA_ADMIN_PASSWORD}"
-printf 'Application image: %s:%s\n' "${IMAGE_REPOSITORY}" "${IMAGE_TAG}"
+printf 'Application image: %s@%s\n' "${IMAGE_REPOSITORY}" "${image_digest}"
+printf 'Helm release: %s (namespace: default)\n' "${HELM_RELEASE}"
 printf 'Generate traffic with: curl http://localhost:3000/health\n'
 printf 'Remove the cluster with: minikube delete --profile %s\n' "${MINIKUBE_PROFILE}"

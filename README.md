@@ -18,9 +18,10 @@ The script checks prerequisites before making changes. It reuses compatible inst
 - Docker Engine is installed system-wide from Docker's official `apt` repository only when Docker is absent or only a client without a local engine is present;
 - Minikube is reused from the system `PATH` when present; otherwise, the pinned binary is checksum-verified and installed into `/usr/local/bin`;
 - a system `kubectl` within one minor release of the configured Kubernetes version is reused; otherwise, a checksum-verified compatible version is installed into `/usr/local/bin`;
+- a Helm client that supports resource adoption is reused; otherwise, pinned Helm v4 is checksum-verified and installed into `/usr/local/bin`;
 - an installed but stopped Docker daemon is started, and Docker group access is configured when required.
 
-It then creates or reuses the Minikube cluster, pulls the public application image published by CI, deploys every workload, provisions Grafana, and waits for all deployments to become available. `make setup` remains available as a convenience when `make` is installed, but `make` is not a bootstrap prerequisite.
+It then creates or reuses the Minikube cluster, resolves the public application tag to an immutable GHCR digest, and runs one atomic `helm upgrade --install` for the complete stack. Every invocation changes a pod-template rollout token, so an existing application, Prometheus, and Grafana deployment are replaced and checked for readiness. `make setup` remains available as a convenience when `make` is installed, but `make` is not a bootstrap prerequisite.
 
 The initial process runs as root so prerequisite installation never invokes nested `sudo` commands. Before creating the cluster, the script switches to the user who invoked `sudo`; Minikube state, kubeconfig, and deployments therefore remain owned by that regular user. When the script is launched directly by a root automation account, set `SETUP_DEPLOY_USER` to the non-root account that should own the local cluster.
 
@@ -65,7 +66,7 @@ Browser / curl
     +-- localhost:3001 --> Grafana --> Prometheus datasource
 ```
 
-Minikube was selected because it provides a familiar local Kubernetes environment and works with Docker. The setup uses Minikube's Docker driver, pulls the public application image from GitHub Container Registry, and maps the three fixed NodePorts to loopback-only host ports. Plain manifests plus Kustomize generators keep the Kubernetes configuration inspectable while avoiding duplicated inline configuration files.
+Minikube was selected because it provides a familiar local Kubernetes environment and works with Docker. The setup uses Minikube's Docker driver, pulls the public application image from GitHub Container Registry, and maps the three fixed NodePorts to loopback-only host ports. A single local Helm chart owns the namespaces, workloads, Services, RBAC, Secret, and generated configuration resources.
 
 Prometheus uses Kubernetes endpoint discovery and an intentionally small, namespace-scoped, read-only RBAC role. Any Service in the `app` namespace with the expected `prometheus.io/*` annotations can be discovered without editing Prometheus configuration. Grafana's datasource, dashboard provider, and dashboard are provisioned as code, so the UI is ready immediately after deployment.
 
@@ -79,10 +80,12 @@ Prometheus uses Kubernetes endpoint discovery and an intentionally small, namesp
 ├── app/
 │   ├── Dockerfile
 │   └── src/
-├── k8s/
-│   ├── app/
-│   ├── monitoring/
-│   └── kustomization.yaml
+├── helm/
+│   └── devops-assignment/
+│       ├── files/
+│       ├── templates/
+│       ├── Chart.yaml
+│       └── values.yaml
 ├── scripts/setup.sh
 ├── Makefile
 └── README.md
@@ -99,7 +102,7 @@ The application exposes:
 
 The Dockerfile uses separate dependency, build, production-dependency, and runtime stages. The final image contains no compiler or development dependencies and runs as the unprivileged `node` user. Kubernetes additionally drops Linux capabilities, blocks privilege escalation, uses the runtime-default seccomp profile, and mounts the container root filesystem read-only.
 
-The deployment uses two replicas, rolling updates with zero planned unavailability, resource requests/limits, and distinct startup, readiness, and liveness probes. It pulls `ghcr.io/kiroalbatrosa/task:latest` with `imagePullPolicy: Always`, so every setup run deploys the newest successful `main` build published by CI. `IMAGE_REPOSITORY` and `IMAGE_TAG` can override that default when testing another published image.
+The application deployment uses two replicas, rolling updates with zero planned unavailability, resource requests/limits, and distinct startup, readiness, and liveness probes. Setup pulls `ghcr.io/kiroalbatrosa/task:latest`, resolves its registry digest, and passes `ghcr.io/kiroalbatrosa/task@sha256:...` to Helm. Every release therefore records the exact deployed image while `IMAGE_REPOSITORY` and `IMAGE_TAG` can still select another published image.
 
 ## Automation commands
 
@@ -109,19 +112,19 @@ The deployment uses two replicas, rolling updates with zero planned unavailabili
 | `make setup` | Convenience wrapper for `sudo ./scripts/setup.sh` |
 | `make test` | Install locked dependencies, test, and compile the application |
 | `make build` | Optional developer-only local image build; deployment does not use it |
-| `make manifests` | Render all Kustomize resources without applying them |
+| `make manifests` | Render the Helm chart without installing it |
 | `make status` | Show assignment pods and Services |
 | `make destroy` | Delete the Minikube profile |
 
-Optional environment variables for setup are `MINIKUBE_VERSION`, `MINIKUBE_PROFILE`, `KUBERNETES_VERSION`, `MINIKUBE_CPUS`, `MINIKUBE_MEMORY`, `IMAGE_REPOSITORY`, `IMAGE_TAG`, `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, and `SETUP_DEPLOY_USER`.
+Optional environment variables for setup are `MINIKUBE_VERSION`, `MINIKUBE_PROFILE`, `KUBERNETES_VERSION`, `HELM_VERSION`, `HELM_RELEASE`, `MINIKUBE_CPUS`, `MINIKUBE_MEMORY`, `IMAGE_REPOSITORY`, `IMAGE_TAG`, `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, and `SETUP_DEPLOY_USER`.
 
-The Kubernetes version is pinned for reproducibility. The application deployment is restarted on every setup run so Kubernetes resolves and pulls the current registry image even though the human-readable tag remains `latest`.
+The Kubernetes and Helm versions are pinned for reproducibility. Helm adopts resources from an older manifest-based installation on the first upgrade. An atomic upgrade waits for readiness and automatically rolls back if the new release cannot become healthy.
 
 ## CI pipeline
 
 `.github/workflows/ci.yaml` contains exactly two jobs:
 
-1. **Test application** installs dependencies using the committed lockfile, runs Jest, and compiles TypeScript.
+1. **Test application** installs dependencies using the committed lockfile, runs Jest, compiles TypeScript, and lints and renders the Helm chart.
 2. **Build and push image** waits for tests, creates a multi-architecture image with BuildKit, generates an SBOM and provenance attestation, and publishes to GitHub Container Registry (GHCR) on pushes to `main` and version tags. Pull requests build the same image but do not push it.
 
 The destination is:
@@ -177,8 +180,8 @@ kubectl logs --namespace observability deployment/grafana
 
 Ports `3000`, `3001`, and `9090` must be free when the Minikube profile is first created. Docker port mappings are fixed at profile creation time; if this profile was created with different options, run `make destroy` and then `make setup`.
 
-Automatic prerequisite installation intentionally targets Debian and Ubuntu. On another operating system, install Docker, Minikube, and a version-compatible `kubectl` manually before running the script.
+Automatic prerequisite installation intentionally targets Debian and Ubuntu. On another operating system, install Docker, Minikube, Helm, and a version-compatible `kubectl` manually before running the script.
 
 ## Production considerations
 
-This setup is intentionally local. A production deployment should replace NodePorts with an Ingress or managed load balancer, use a managed secret provider instead of a locally generated Kubernetes Secret, use persistent or remote storage for metrics, add TLS and network policies, and deploy highly available monitoring components. The CI image tags should then be promoted by immutable digest through separate environments rather than deploying a mutable branch tag.
+This setup is intentionally local. A production deployment should replace NodePorts with an Ingress or managed load balancer, use a managed secret provider instead of a locally generated Kubernetes Secret, use persistent or remote storage for metrics, add TLS and network policies, and deploy highly available monitoring components. The local workflow already resolves tags to immutable digests; production should additionally promote those digests through separate environments.

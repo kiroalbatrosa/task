@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: app
+  name: {{ .Values.namespaces.application }}
   labels:
     app.kubernetes.io/part-of: devops-home-assignment
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: observability
+  name: {{ .Values.namespaces.observability }}
   labels:
     app.kubernetes.io/part-of: devops-home-assignment

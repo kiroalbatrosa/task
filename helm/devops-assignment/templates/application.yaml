@@ -2,13 +2,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: devops-assignment
-  namespace: app
+  namespace: {{ .Values.namespaces.application }}
   labels:
     app.kubernetes.io/name: devops-assignment
     app.kubernetes.io/component: application
     app.kubernetes.io/part-of: devops-home-assignment
 spec:
-  replicas: 2
+  replicas: {{ .Values.application.replicas }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -19,6 +19,8 @@ spec:
       app.kubernetes.io/name: devops-assignment
   template:
     metadata:
+      annotations:
+        devops-assignment.io/rollout-token: {{ .Values.rolloutToken | quote }}
       labels:
         app.kubernetes.io/name: devops-assignment
         app.kubernetes.io/component: application
@@ -34,8 +36,12 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: ghcr.io/kiroalbatrosa/task:latest
-          imagePullPolicy: Always
+          {{- if .Values.application.image.digest }}
+          image: "{{ .Values.application.image.repository }}@{{ .Values.application.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.application.image.repository }}:{{ .Values.application.image.tag }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.application.image.pullPolicy }}
           ports:
             - name: http
               containerPort: 3000
@@ -68,15 +74,34 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 3
           resources:
-            requests:
-              cpu: 25m
-              memory: 48Mi
-            limits:
-              cpu: 250m
-              memory: 128Mi
+            {{- toYaml .Values.application.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: devops-assignment
+  namespace: {{ .Values.namespaces.application }}
+  labels:
+    app.kubernetes.io/name: devops-assignment
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: devops-home-assignment
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "3000"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: devops-assignment
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: {{ .Values.application.service.nodePort }}
+      protocol: TCP

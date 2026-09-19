@@ -41,6 +41,6 @@ describe('GET /', () => {
     const res = await request(app).get('/');
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain('Hello from the DevOps home assignment app!');
+    expect(res.text).toContain('Hello from the DevOps home assignment app! CI/CD deployment verified.');
   });
 });

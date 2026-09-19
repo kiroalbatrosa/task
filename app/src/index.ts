@@ -32,7 +32,7 @@ app.get('/metrics', async (_req: Request, res: Response) => {
 });
 
 app.get('/', (_req: Request, res: Response) => {
-  res.status(200).send('Hello from the DevOps home assignment app!');
+  res.status(200).send('Hello from the DevOps home assignment app! CI/CD deployment verified.');
 });
 
 if (require.main === module) {
